@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockReadGuard},
 };
 
 use axum::{
@@ -30,10 +30,6 @@ struct GuessError2;
 #[derive(ErrorStack, Debug, Default)]
 #[error_message(&format!("Error occured with foo "))]
 struct GuessError;
-
-fn infer_lifetime<'a, T: 'a, F: Fn(&'a T) -> &'a T>(f: F) -> F {
-    f
-}
 
 // the application state
 #[derive(Clone)]
@@ -114,6 +110,17 @@ async fn generate_game_handler(Extension(state): Extension<SharedAppDBState>) ->
     id.to_string()
 }
 
+async fn reveal_handler_2(
+    Path(id): Path<String>,
+    Extension(state): Extension<SharedAppDBState>,
+) -> Result<String, Report<MainError>> {
+    let y = read_from_hash(&state).change_context(MainError::UnknownCause)?;
+
+    let y = get_guess(&y, id)?;
+
+    Ok(y.to_string())
+}
+
 async fn reveal_handler(
     Path(id): Path<String>,
     Extension(state): Extension<SharedAppDBState>,
@@ -159,41 +166,6 @@ async fn guess_num_handler(
     }
 }
 
-async fn hello_world_handler() -> &'static str {
-    "Hello Selva"
-}
-
-async fn handler(Extension(state): Extension<AppState>) -> String {
-    let y = state.number_to_guess;
-    format!("THE NUMBER IS :: {y}")
-}
-
-async fn guess_handler(Path(user_id): Path<u32>, Extension(state): Extension<AppState>) -> String {
-    let y: u32 = state.number_to_guess;
-
-    if y == user_id {
-        format!("YOur guess is correct {y}")
-    } else {
-        format!("YOur guess is wrong")
-    }
-}
-
-// fn parse_config(path: impl AsRef<Path>) -> Result<Config, Report<ParseConfigError>> {
-//     let path = path.as_ref();
-
-//     // First, we have a base error:
-//     let io_result = fs::read_to_string(path);      // Result<File, std::io::Error>
-
-//     // Convert the base error into a Report:
-//     let io_report = io_result.report();            // Result<File, Report<std::io::Error>>
-
-//     // Change the context, which will eventually return from the function:
-//     let config_report = io_report
-//         .change_context(ParseConfigError::new())?; // Result<File, Report<ParseConfigError>>
-
-//     // ...
-// }
-
 impl<E> From<E> for GuessError2
 where
     E: Into<Report<GuessError>>,
@@ -226,27 +198,6 @@ impl IntoResponse for RefinedError {
             format!("Error :: {}", self.0.to_string()),
         )
             .into_response()
-
-        // match y.clone() {
-        //     (CustomErrors::OtherError) => (
-        //         StatusCode::INTERNAL_SERVER_ERROR,
-        //         format!("Something went wrong"),
-        //     ),
-        //     (CustomErrors::GuessDataMissingForGame { game_id }) => (
-        //         StatusCode::INTERNAL_SERVER_ERROR,
-        //         format!("Data missing for {}", game_id.clone()),
-        //     ),
-        //     (CustomErrors::InvalidGame { game_id }) => (
-        //         StatusCode::INTERNAL_SERVER_ERROR,
-        //         format!("Wrong Game Id :: {}", game_id.clone()),
-        //     ),
-        // }
-        // .into_response()
-
-        // match self.0 {
-
-        // }
-        // .into_response()
     }
 }
 
@@ -257,4 +208,47 @@ where
     fn from(_err: E) -> Self {
         RefinedError(_err.into())
     }
+}
+
+fn read_from_hash(
+    shared_hash: &SharedAppDBState,
+) -> Result<RwLockReadGuard<AppDBState>, Report<LowLevelErrors>> {
+    if let Ok(read_guard) = shared_hash.read() {
+        // the returned read_guard also implements `Deref`
+        Ok(read_guard)
+    } else {
+        Err(LowLevelErrors::PoisonedHash)
+            .report()
+            .change_context(LowLevelErrors::PoisonedHash)
+        // shared_hash.clone().read().map_err(|_err| MainError::UnknownCause).report().change_context(LowLevelErrors::PoisonedHash)
+    }
+}
+
+fn get_guess<'a>(
+    shared_hash: &'a RwLockReadGuard<'a, AppDBState>,
+    id: String,
+) -> Result<&u32, Report<MainError>> {
+    shared_hash
+        .guess_pairs
+        .get(&id)
+        .ok_or_else(|| LowLevelErrors::PoisonedHash)
+        .report()
+        .change_context(MainError::InvalidGame {
+            game_id: id.to_string(),
+        })
+}
+
+#[derive(ErrorStack, Debug, Default)]
+enum MainError {
+    #[error_message(&format!("The game :: {:?} is not valid", game_id))]
+    InvalidGame { game_id: String },
+    #[error_message(&format!("No guess available for {:?} game", game_id))]
+    NoGuessvalueForId { game_id: String },
+    #[default]
+    #[error_message(&format!("Error not known but we crashed"))]
+    UnknownCause,
+}
+#[derive(ErrorStack, Debug)]
+enum LowLevelErrors {
+    PoisonedHash,
 }

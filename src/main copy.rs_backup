@@ -31,18 +31,6 @@ struct GuessError2;
 #[error_message(&format!("Error occured with foo "))]
 struct GuessError;
 
-#[derive(Debug, ErrorStack)]
-enum CustomErrors {
-    #[error_message(&format!("Error occured with foo "))]
-    InvalidGame { game_id : String},
-    #[error_message(&format!("Error occured with foo "))]
-    GuessDataMissingForGame { game_id: String },
-}
-
-fn infer_lifetime<'a, T: 'a, F: Fn(&'a T) -> &'a T>(f: F) -> F {
-    f
-}
-
 // the application state
 #[derive(Clone)]
 struct AppState {
@@ -141,14 +129,21 @@ async fn guess_num_handler(
     Path((id, guess)): Path<(String, u32)>,
     // Path(guess): Path<u32>,
     Extension(state): Extension<SharedAppDBState>,
-) -> Result<String, GuessError2> {
+) -> Result<String, RefinedError> {
     let y = state
         .read()
-        .map_err(|s| GuessError2)
-        .report()
-        .change_context(GuessError)?;
+        .map_err(|s| CustomErrors::InvalidGame {
+            game_id: id.clone(),
+        })
+        .report()?;
 
-    let y1 = y.guess_pairs.get(&id).ok_or_else(|| GuessError).report()?;
+    let y1 = y
+        .guess_pairs
+        .get(&id)
+        .ok_or_else(|| CustomErrors::GuessDataMissingForGame {
+            game_id: id.clone(),
+        })
+        .report()?;
 
     let y2 = y1.to_owned();
     if y2 == guess {
@@ -157,25 +152,6 @@ async fn guess_num_handler(
         Ok(format!("YOur guess is greater"))
     } else {
         Ok(format!("YOur guess is lesser"))
-    }
-}
-
-async fn hello_world_handler() -> &'static str {
-    "Hello Selva"
-}
-
-async fn handler(Extension(state): Extension<AppState>) -> String {
-    let y = state.number_to_guess;
-    format!("THE NUMBER IS :: {y}")
-}
-
-async fn guess_handler(Path(user_id): Path<u32>, Extension(state): Extension<AppState>) -> String {
-    let y: u32 = state.number_to_guess;
-
-    if y == user_id {
-        format!("YOur guess is correct {y}")
-    } else {
-        format!("YOur guess is wrong")
     }
 }
 
@@ -188,19 +164,58 @@ where
     }
 }
 
+#[derive(Debug, ErrorStack, Default, Clone)]
+#[error_message(&format!("Something went haywire"))]
+enum CustomErrors {
+    InvalidGame {
+        game_id: String,
+    },
+    GuessDataMissingForGame {
+        game_id: String,
+    },
+    #[default]
+    OtherError,
+}
 
-// fn parse_config(path: impl AsRef<Path>) -> Result<Config, Report<ParseConfigError>> {
-//     let path = path.as_ref();
+struct RefinedError(Report<CustomErrors>);
 
-//     // First, we have a base error:
-//     let io_result = fs::read_to_string(path);      // Result<File, std::io::Error>
+impl IntoResponse for RefinedError {
+    fn into_response(self) -> Response {
+        // let y = self.0.downcast_ref::<CustomErrors>().unwrap();
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error :: {}", self.0.to_string()),
+        )
+            .into_response()
 
-//     // Convert the base error into a Report:
-//     let io_report = io_result.report();            // Result<File, Report<std::io::Error>>
+        // match y.clone() {
+        //     (CustomErrors::OtherError) => (
+        //         StatusCode::INTERNAL_SERVER_ERROR,
+        //         format!("Something went wrong"),
+        //     ),
+        //     (CustomErrors::GuessDataMissingForGame { game_id }) => (
+        //         StatusCode::INTERNAL_SERVER_ERROR,
+        //         format!("Data missing for {}", game_id.clone()),
+        //     ),
+        //     (CustomErrors::InvalidGame { game_id }) => (
+        //         StatusCode::INTERNAL_SERVER_ERROR,
+        //         format!("Wrong Game Id :: {}", game_id.clone()),
+        //     ),
+        // }
+        // .into_response()
 
-//     // Change the context, which will eventually return from the function:
-//     let config_report = io_report
-//         .change_context(ParseConfigError::new())?; // Result<File, Report<ParseConfigError>>
+        // match self.0 {
 
-//     // ...
-// }
+        // }
+        // .into_response()
+    }
+}
+
+impl<E> From<E> for RefinedError
+where
+    E: Into<Report<CustomErrors>>,
+{
+    fn from(_err: E) -> Self {
+        RefinedError(_err.into())
+    }
+}
