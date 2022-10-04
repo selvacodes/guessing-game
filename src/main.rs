@@ -84,7 +84,7 @@ async fn main() {
             }),
         )
         .route("/generate-game-id", get(generate_game_handler))
-        .route("/reveal/:id", get(reveal_handler))
+        .route("/reveal/:id", get(reveal_handler_2))
         .route("/guess/:id/:guess", get(guess_num_handler))
         .layer(Extension(shared_db_state))
         .into_make_service();
@@ -113,8 +113,10 @@ async fn generate_game_handler(Extension(state): Extension<SharedAppDBState>) ->
 async fn reveal_handler_2(
     Path(id): Path<String>,
     Extension(state): Extension<SharedAppDBState>,
-) -> Result<String, Report<MainError>> {
+) -> Result<String, RefinedMainError> {
     let y = read_from_hash(&state).change_context(MainError::UnknownCause)?;
+    // .and_then(|hash_value| get_guess(&hash_value, id))
+    // .map(|guess| guess.clone().to_string());
 
     let y = get_guess(&y, id)?;
 
@@ -143,7 +145,7 @@ async fn guess_num_handler(
 ) -> Result<String, RefinedError> {
     let y = state
         .read()
-        .map_err(|s| CustomErrors::InvalidGame {
+        .map_err(|_s| CustomErrors::InvalidGame {
             game_id: id.clone(),
         })
         .report()?;
@@ -227,10 +229,11 @@ fn read_from_hash(
 fn get_guess<'a>(
     shared_hash: &'a RwLockReadGuard<'a, AppDBState>,
     id: String,
-) -> Result<&u32, Report<MainError>> {
+) -> Result<&'a u32, Report<MainError>> {
     shared_hash
         .guess_pairs
-        .get(&id)
+        .get(&id.clone())
+        // .map(|x| x.clone())
         .ok_or_else(|| LowLevelErrors::PoisonedHash)
         .report()
         .change_context(MainError::InvalidGame {
@@ -251,4 +254,26 @@ enum MainError {
 #[derive(ErrorStack, Debug)]
 enum LowLevelErrors {
     PoisonedHash,
+}
+
+struct RefinedMainError(Report<MainError>);
+
+impl IntoResponse for RefinedMainError {
+    fn into_response(self) -> Response {
+        // let y = self.0.downcast_ref::<CustomErrors>().unwrap();
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error :: {}", self.0.to_string()),
+        )
+            .into_response()
+    }
+}
+
+impl<E> From<E> for RefinedMainError
+where
+    E: Into<Report<MainError>>,
+{
+    fn from(_err: E) -> Self {
+        RefinedMainError(_err.into())
+    }
 }
